@@ -1,4 +1,4 @@
-
+```groovy
 pipeline {
     agent any
 
@@ -6,36 +6,43 @@ pipeline {
         booleanParam(
             name: 'SIMULATE_FAILURE',
             defaultValue: false,
-            description: 'Test Kubernetes automatic rollback using an invalid image'
+            description: 'Run an optional Kubernetes rollback test'
         )
     }
 
     environment {
+        DOCKER_CLI = 'C:\\Users\\shree\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+        KUBECTL_CLI = 'C:\\Users\\shree\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\kubectl.exe'
+
         DOCKER_IMAGE = 'shreemathi07/public-transport-dashboard'
         KUBE_DEPLOYMENT = 'public-transport-dashboard'
         KUBE_CONTAINER = 'public-transport-dashboard'
-        KUBE_SERVICE = 'public-transport-dashboard-service'
         APP_URL = 'http://localhost:30081'
     }
 
     stages {
         stage('Checkout Source Code') {
             steps {
-                echo 'Source code has been checked out from GitHub.'
+                echo 'Source code checked out from GitHub.'
+
                 powershell '''
-                    if (!(Test-Path "index.html")) {
-                        throw "index.html was not found."
+                    $ErrorActionPreference = "Stop"
+
+                    foreach ($file in @("index.html", "Dockerfile", "deployment.yaml")) {
+                        if (!(Test-Path $file)) {
+                            throw "Required file is missing: $file"
+                        }
                     }
 
-                    if (!(Test-Path "Dockerfile")) {
-                        throw "Dockerfile was not found."
+                    if (!(Test-Path $env:DOCKER_CLI)) {
+                        throw "Docker executable not found at $env:DOCKER_CLI"
                     }
 
-                    if (!(Test-Path "deployment.yaml")) {
-                        throw "deployment.yaml was not found."
+                    if (!(Test-Path $env:KUBECTL_CLI)) {
+                        throw "kubectl executable not found at $env:KUBECTL_CLI"
                     }
 
-                    Write-Host "Required project files are present."
+                    Write-Host "Required files and command-line tools verified."
                 '''
             }
         }
@@ -45,18 +52,19 @@ pipeline {
                 stage('Validate HTML') {
                     steps {
                         powershell '''
+                            $ErrorActionPreference = "Stop"
                             $html = Get-Content "index.html" -Raw
 
                             if ($html -notmatch '(?i)<html') {
-                                throw "HTML opening tag was not found."
+                                throw "HTML opening tag missing."
                             }
 
                             if ($html -notmatch '(?i)</html>') {
-                                throw "HTML closing tag was not found."
+                                throw "HTML closing tag missing."
                             }
 
                             if ($html -notmatch '(?i)<body') {
-                                throw "HTML body was not found."
+                                throw "HTML body missing."
                             }
 
                             Write-Host "HTML validation passed."
@@ -67,22 +75,23 @@ pipeline {
                 stage('Validate Deployment Files') {
                     steps {
                         powershell '''
+                            $ErrorActionPreference = "Stop"
                             $dockerfile = Get-Content "Dockerfile" -Raw
                             $deployment = Get-Content "deployment.yaml" -Raw
 
                             if ($dockerfile -notmatch '(?im)^FROM\\s+') {
-                                throw "Dockerfile must contain a FROM instruction."
+                                throw "Dockerfile FROM instruction missing."
                             }
 
                             if ($deployment -notmatch 'kind:\\s*Deployment') {
-                                throw "Kubernetes Deployment definition not found."
+                                throw "Kubernetes Deployment missing."
                             }
 
                             if ($deployment -notmatch 'kind:\\s*Service') {
-                                throw "Kubernetes Service definition not found."
+                                throw "Kubernetes Service missing."
                             }
 
-                            Write-Host "Deployment file validation passed."
+                            Write-Host "Deployment files validated."
                         '''
                     }
                 }
@@ -94,17 +103,17 @@ pipeline {
                 powershell '''
                     $ErrorActionPreference = "Stop"
 
-                    docker build -t "$env:DOCKER_IMAGE:$env:BUILD_NUMBER" .
+                    & $env:DOCKER_CLI build -t "$($env:DOCKER_IMAGE):$($env:BUILD_NUMBER)" .
                     if ($LASTEXITCODE -ne 0) {
                         throw "Docker image build failed."
                     }
 
-                    docker tag "$env:DOCKER_IMAGE:$env:BUILD_NUMBER" "$env:DOCKER_IMAGE:latest"
+                    & $env:DOCKER_CLI tag "$($env:DOCKER_IMAGE):$($env:BUILD_NUMBER)" "$($env:DOCKER_IMAGE):latest"
                     if ($LASTEXITCODE -ne 0) {
                         throw "Docker image tagging failed."
                     }
 
-                    Write-Host "Docker image built and tagged successfully."
+                    Write-Host "Docker image built successfully."
                 '''
             }
         }
@@ -116,15 +125,15 @@ pipeline {
                     $containerName = "pt-dashboard-test-$env:BUILD_NUMBER"
 
                     try {
-                        docker run -d --name $containerName -p 18080:80 "$env:DOCKER_IMAGE:$env:BUILD_NUMBER"
+                        & $env:DOCKER_CLI run -d --name $containerName -p 18080:80 "$($env:DOCKER_IMAGE):$($env:BUILD_NUMBER)"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker test container failed to start."
+                            throw "Unable to start Docker test container."
                         }
 
                         $ready = $false
 
-                        for ($i = 0; $i -lt 12; $i++) {
+                        for ($i = 0; $i -lt 15; $i++) {
                             Start-Sleep -Seconds 2
 
                             try {
@@ -136,18 +145,18 @@ pipeline {
                                 }
                             }
                             catch {
-                                Write-Host "Waiting for the application to respond..."
+                                Write-Host "Waiting for application startup..."
                             }
                         }
 
                         if (-not $ready) {
-                            throw "Docker application did not return HTTP 200."
+                            throw "Docker application health check failed."
                         }
 
-                        Write-Host "Docker application test passed."
+                        Write-Host "Docker container test passed."
                     }
                     finally {
-                        docker rm -f $containerName 2>$null | Out-Null
+                        & $env:DOCKER_CLI rm -f $containerName 2>$null | Out-Null
                     }
                 '''
             }
@@ -165,27 +174,33 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = "Stop"
 
-                        $secureToken = ConvertTo-SecureString $env:DOCKER_TOKEN -AsPlainText -Force
-                        $credential = New-Object System.Management.Automation.PSCredential($env:DOCKER_USER, $secureToken)
-
-                        $credential.Password | docker login -u $env:DOCKER_USER --password-stdin
-
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Docker Hub login failed. Check the Jenkins dockerhub-creds credential."
+                        if ([string]::IsNullOrWhiteSpace($env:DOCKER_USER) -or
+                            [string]::IsNullOrWhiteSpace($env:DOCKER_TOKEN)) {
+                            throw "Docker Hub Jenkins credentials are empty."
                         }
 
-                        docker push "$env:DOCKER_IMAGE:$env:BUILD_NUMBER"
+                        $token = ConvertTo-SecureString $env:DOCKER_TOKEN -AsPlainText -Force
+                        $credential = New-Object System.Management.Automation.PSCredential($env:DOCKER_USER, $token)
+
+                        $credential.Password | & $env:DOCKER_CLI login --username $env:DOCKER_USER --password-stdin
+
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker Hub push of the build image failed."
+                            throw "Docker Hub authentication failed. Check dockerhub-creds."
                         }
 
-                        docker push "$env:DOCKER_IMAGE:latest"
+                        & $env:DOCKER_CLI push "$($env:DOCKER_IMAGE):$($env:BUILD_NUMBER)"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker Hub push of the latest image failed."
+                            throw "Failed to push the numbered Docker image."
                         }
 
-                        Write-Host "Docker images pushed to Docker Hub successfully."
-                        docker logout
+                        & $env:DOCKER_CLI push "$($env:DOCKER_IMAGE):latest"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to push the latest Docker image."
+                        }
+
+                        & $env:DOCKER_CLI logout
+
+                        Write-Host "Docker Hub push completed successfully."
                     '''
                 }
             }
@@ -203,25 +218,25 @@ pipeline {
                         $ErrorActionPreference = "Stop"
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
 
-                        kubectl apply -f deployment.yaml
+                        & $env:KUBECTL_CLI apply -f deployment.yaml
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Kubernetes manifest application failed."
+                            throw "Failed to apply Kubernetes manifests."
                         }
 
-                        kubectl set image "deployment/$env:KUBE_DEPLOYMENT" "$env:KUBE_CONTAINER=$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
+                        & $env:KUBECTL_CLI set image "deployment/$env:KUBE_DEPLOYMENT" "$($env:KUBE_CONTAINER)=$($env:DOCKER_IMAGE):$($env:BUILD_NUMBER)"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Kubernetes image update failed. Check the deployment and container names."
+                            throw "Failed to update the Kubernetes deployment image."
                         }
 
-                        kubectl rollout status "deployment/$env:KUBE_DEPLOYMENT" --timeout=180s
+                        & $env:KUBECTL_CLI rollout status "deployment/$env:KUBE_DEPLOYMENT" --timeout=180s
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Kubernetes deployment rollout failed."
+                            throw "Kubernetes rollout failed."
                         }
 
-                        kubectl get deployments
-                        kubectl get services
+                        & $env:KUBECTL_CLI get deployments
+                        & $env:KUBECTL_CLI get services
 
-                        Write-Host "Kubernetes deployment completed successfully."
+                        Write-Host "Kubernetes deployment succeeded."
                     '''
                 }
             }
@@ -243,17 +258,17 @@ pipeline {
                             }
                         }
                         catch {
-                            Write-Host "Waiting for the Kubernetes application..."
+                            Write-Host "Waiting for application availability..."
                         }
 
                         Start-Sleep -Seconds 4
                     }
 
                     if (-not $ready) {
-                        throw "The application did not respond successfully at $env:APP_URL."
+                        throw "Application health check failed at $env:APP_URL"
                     }
 
-                    Write-Host "Kubernetes application verification passed."
+                    Write-Host "Application verification passed."
                 '''
             }
         }
@@ -276,29 +291,22 @@ pipeline {
                         $ErrorActionPreference = "Stop"
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
 
-                        $previousImage = kubectl get deployment $env:KUBE_DEPLOYMENT -o "jsonpath={.spec.template.spec.containers[0].image}"
+                        & $env:KUBECTL_CLI set image "deployment/$env:KUBE_DEPLOYMENT" "$($env:KUBE_CONTAINER)=$($env:DOCKER_IMAGE):invalid-image"
 
-                        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($previousImage)) {
-                            throw "Could not determine the current Kubernetes image."
-                        }
-
-                        Write-Host "Previous image recorded."
-
-                        kubectl set image "deployment/$env:KUBE_DEPLOYMENT" "$env:KUBE_CONTAINER=$env:DOCKER_IMAGE`:invalid-image"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Could not start the rollback test."
+                            throw "Could not initiate rollback test."
                         }
 
                         Start-Sleep -Seconds 20
 
-                        kubectl rollout undo "deployment/$env:KUBE_DEPLOYMENT"
+                        & $env:KUBECTL_CLI rollout undo "deployment/$env:KUBE_DEPLOYMENT"
                         if ($LASTEXITCODE -ne 0) {
                             throw "Kubernetes rollback command failed."
                         }
 
-                        kubectl rollout status "deployment/$env:KUBE_DEPLOYMENT" --timeout=180s
+                        & $env:KUBECTL_CLI rollout status "deployment/$env:KUBE_DEPLOYMENT" --timeout=180s
                         if ($LASTEXITCODE -ne 0) {
-                            throw "The deployment did not recover after rollback."
+                            throw "Deployment did not recover after rollback."
                         }
 
                         Write-Host "Kubernetes rollback test passed."
@@ -321,7 +329,8 @@ pipeline {
         }
 
         failure {
-            echo 'FAILURE: Check the failed stage in the Jenkins console output.'
+            echo 'FAILURE: Inspect the failed stage in Console Output.'
         }
     }
 }
+```
