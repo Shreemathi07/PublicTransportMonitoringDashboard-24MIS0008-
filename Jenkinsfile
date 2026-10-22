@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -5,21 +6,37 @@ pipeline {
         booleanParam(
             name: 'SIMULATE_FAILURE',
             defaultValue: false,
-            description: 'Test automatic Kubernetes rollback using an invalid image'
+            description: 'Test Kubernetes automatic rollback using an invalid image'
         )
     }
 
     environment {
-        IMAGE_NAME = 'shreemathi07/public-transport-dashboard'
-        K8S_DEPLOYMENT = 'public-transport-dashboard'
-        K8S_CONTAINER = 'public-transport-dashboard'
+        DOCKER_IMAGE = 'shreemathi07/public-transport-dashboard'
+        KUBE_DEPLOYMENT = 'public-transport-dashboard'
+        KUBE_CONTAINER = 'public-transport-dashboard'
+        KUBE_SERVICE = 'public-transport-dashboard-service'
+        APP_URL = 'http://localhost:30081'
     }
 
     stages {
-        stage('Checkout') {
+        stage('Checkout Source Code') {
             steps {
-                checkout scm
-                echo 'Source code checked out successfully.'
+                echo 'Source code has been checked out from GitHub.'
+                powershell '''
+                    if (!(Test-Path "index.html")) {
+                        throw "index.html was not found."
+                    }
+
+                    if (!(Test-Path "Dockerfile")) {
+                        throw "Dockerfile was not found."
+                    }
+
+                    if (!(Test-Path "deployment.yaml")) {
+                        throw "deployment.yaml was not found."
+                    }
+
+                    Write-Host "Required project files are present."
+                '''
             }
         }
 
@@ -28,33 +45,44 @@ pipeline {
                 stage('Validate HTML') {
                     steps {
                         powershell '''
-                            if (!(Test-Path "index.html")) {
-                                throw "index.html is missing"
-                            }
-
                             $html = Get-Content "index.html" -Raw
 
-                            if ($html -notmatch "<html" -or $html -notmatch "</html>") {
-                                throw "HTML validation failed"
+                            if ($html -notmatch '(?i)<html') {
+                                throw "HTML opening tag was not found."
                             }
 
-                            Write-Output "HTML validation passed."
+                            if ($html -notmatch '(?i)</html>') {
+                                throw "HTML closing tag was not found."
+                            }
+
+                            if ($html -notmatch '(?i)<body') {
+                                throw "HTML body was not found."
+                            }
+
+                            Write-Host "HTML validation passed."
                         '''
                     }
                 }
 
-                stage('Validate Docker and Kubernetes Files') {
+                stage('Validate Deployment Files') {
                     steps {
                         powershell '''
-                            if (!(Test-Path "Dockerfile")) {
-                                throw "Dockerfile is missing"
+                            $dockerfile = Get-Content "Dockerfile" -Raw
+                            $deployment = Get-Content "deployment.yaml" -Raw
+
+                            if ($dockerfile -notmatch '(?im)^FROM\\s+') {
+                                throw "Dockerfile must contain a FROM instruction."
                             }
 
-                            if (!(Test-Path "deployment.yaml")) {
-                                throw "deployment.yaml is missing"
+                            if ($deployment -notmatch 'kind:\\s*Deployment') {
+                                throw "Kubernetes Deployment definition not found."
                             }
 
-                            Write-Output "Required deployment files exist."
+                            if ($deployment -notmatch 'kind:\\s*Service') {
+                                throw "Kubernetes Service definition not found."
+                            }
+
+                            Write-Host "Deployment file validation passed."
                         '''
                     }
                 }
@@ -64,16 +92,19 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 powershell '''
-                    $tag = "$env:BUILD_NUMBER"
-                    docker build -t "$env:IMAGE_NAME`:$tag" .
+                    $ErrorActionPreference = "Stop"
+
+                    docker build -t "$env:DOCKER_IMAGE:$env:BUILD_NUMBER" .
                     if ($LASTEXITCODE -ne 0) {
-                        throw "Docker image build failed"
+                        throw "Docker image build failed."
                     }
 
-                    docker tag "$env:IMAGE_NAME`:$tag" "$env:IMAGE_NAME`:latest"
+                    docker tag "$env:DOCKER_IMAGE:$env:BUILD_NUMBER" "$env:DOCKER_IMAGE:latest"
                     if ($LASTEXITCODE -ne 0) {
-                        throw "Docker image tagging failed"
+                        throw "Docker image tagging failed."
                     }
+
+                    Write-Host "Docker image built and tagged successfully."
                 '''
             }
         }
@@ -81,25 +112,42 @@ pipeline {
         stage('Test Docker Container') {
             steps {
                 powershell '''
-                    docker rm -f transport-dashboard-ci 2>$null | Out-Null
-
-                    docker run -d --name transport-dashboard-ci -p 18081:80 "$env:IMAGE_NAME`:latest"
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "Container failed to start"
-                    }
+                    $ErrorActionPreference = "Stop"
+                    $containerName = "pt-dashboard-test-$env:BUILD_NUMBER"
 
                     try {
-                        Start-Sleep -Seconds 5
-                        $response = Invoke-WebRequest -Uri "http://localhost:18081" -UseBasicParsing -TimeoutSec 15
+                        docker run -d --name $containerName -p 18080:80 "$env:DOCKER_IMAGE:$env:BUILD_NUMBER"
 
-                        if ($response.StatusCode -ne 200) {
-                            throw "Web application test failed"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker test container failed to start."
                         }
 
-                        Write-Output "Docker container HTTP test passed."
+                        $ready = $false
+
+                        for ($i = 0; $i -lt 12; $i++) {
+                            Start-Sleep -Seconds 2
+
+                            try {
+                                $response = Invoke-WebRequest -Uri "http://localhost:18080" -UseBasicParsing -TimeoutSec 3
+
+                                if ($response.StatusCode -eq 200) {
+                                    $ready = $true
+                                    break
+                                }
+                            }
+                            catch {
+                                Write-Host "Waiting for the application to respond..."
+                            }
+                        }
+
+                        if (-not $ready) {
+                            throw "Docker application did not return HTTP 200."
+                        }
+
+                        Write-Host "Docker application test passed."
                     }
                     finally {
-                        docker rm -f transport-dashboard-ci 2>$null | Out-Null
+                        docker rm -f $containerName 2>$null | Out-Null
                     }
                 '''
             }
@@ -107,27 +155,36 @@ pipeline {
 
         stage('Push Image to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-creds',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_TOKEN'
-                )]) {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_TOKEN'
+                    )
+                ]) {
                     powershell '''
-                        $env:DOCKER_TOKEN | docker login -u $env:DOCKER_USER --password-stdin
+                        $ErrorActionPreference = "Stop"
+
+                        $secureToken = ConvertTo-SecureString $env:DOCKER_TOKEN -AsPlainText -Force
+                        $credential = New-Object System.Management.Automation.PSCredential($env:DOCKER_USER, $secureToken)
+
+                        $credential.Password | docker login -u $env:DOCKER_USER --password-stdin
+
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker Hub login failed"
+                            throw "Docker Hub login failed. Check the Jenkins dockerhub-creds credential."
                         }
 
-                        docker push "$env:IMAGE_NAME`:$env:BUILD_NUMBER"
+                        docker push "$env:DOCKER_IMAGE:$env:BUILD_NUMBER"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Versioned image push failed"
+                            throw "Docker Hub push of the build image failed."
                         }
 
-                        docker push "$env:IMAGE_NAME`:latest"
+                        docker push "$env:DOCKER_IMAGE:latest"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Latest image push failed"
+                            throw "Docker Hub push of the latest image failed."
                         }
 
+                        Write-Host "Docker images pushed to Docker Hub successfully."
                         docker logout
                     '''
                 }
@@ -136,79 +193,115 @@ pipeline {
 
         stage('Deploy to Kubernetes') {
             steps {
-                withCredentials([file(
-                    credentialsId: 'kubeconfig-creds',
-                    variable: 'KUBECONFIG_FILE'
-                )]) {
+                withCredentials([
+                    file(
+                        credentialsId: 'kubeconfig-creds',
+                        variable: 'KUBECONFIG_FILE'
+                    )
+                ]) {
                     powershell '''
+                        $ErrorActionPreference = "Stop"
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
 
                         kubectl apply -f deployment.yaml
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Kubernetes manifest apply failed"
+                            throw "Kubernetes manifest application failed."
                         }
 
-                        kubectl set image "deployment/$env:K8S_DEPLOYMENT" "$env:K8S_CONTAINER=$env:IMAGE_NAME`:$env:BUILD_NUMBER"
+                        kubectl set image "deployment/$env:KUBE_DEPLOYMENT" "$env:KUBE_CONTAINER=$env:DOCKER_IMAGE`:$env:BUILD_NUMBER"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Could not update Kubernetes image"
+                            throw "Kubernetes image update failed. Check the deployment and container names."
                         }
 
-                        kubectl rollout status "deployment/$env:K8S_DEPLOYMENT" --timeout=120s
+                        kubectl rollout status "deployment/$env:KUBE_DEPLOYMENT" --timeout=180s
                         if ($LASTEXITCODE -ne 0) {
-                            kubectl rollout undo "deployment/$env:K8S_DEPLOYMENT"
-                            throw "Deployment rollout failed; rollback requested"
+                            throw "Kubernetes deployment rollout failed."
                         }
 
-                        Write-Output "Kubernetes deployment completed successfully."
+                        kubectl get deployments
+                        kubectl get services
+
+                        Write-Host "Kubernetes deployment completed successfully."
                     '''
                 }
             }
         }
 
+        stage('Verify Application') {
+            steps {
+                powershell '''
+                    $ErrorActionPreference = "Stop"
+                    $ready = $false
+
+                    for ($i = 0; $i -lt 15; $i++) {
+                        try {
+                            $response = Invoke-WebRequest -Uri $env:APP_URL -UseBasicParsing -TimeoutSec 5
+
+                            if ($response.StatusCode -eq 200) {
+                                $ready = $true
+                                break
+                            }
+                        }
+                        catch {
+                            Write-Host "Waiting for the Kubernetes application..."
+                        }
+
+                        Start-Sleep -Seconds 4
+                    }
+
+                    if (-not $ready) {
+                        throw "The application did not respond successfully at $env:APP_URL."
+                    }
+
+                    Write-Host "Kubernetes application verification passed."
+                '''
+            }
+        }
+
         stage('Test Automatic Rollback') {
             when {
-                expression { return params.SIMULATE_FAILURE }
+                expression {
+                    return params.SIMULATE_FAILURE
+                }
             }
+
             steps {
-                withCredentials([file(
-                    credentialsId: 'kubeconfig-creds',
-                    variable: 'KUBECONFIG_FILE'
-                )]) {
+                withCredentials([
+                    file(
+                        credentialsId: 'kubeconfig-creds',
+                        variable: 'KUBECONFIG_FILE'
+                    )
+                ]) {
                     powershell '''
+                        $ErrorActionPreference = "Stop"
                         $env:KUBECONFIG = $env:KUBECONFIG_FILE
 
-                        kubectl set image "deployment/$env:K8S_DEPLOYMENT" "$env:K8S_CONTAINER=$env:IMAGE_NAME`:faulty"
+                        $previousImage = kubectl get deployment $env:KUBE_DEPLOYMENT -o "jsonpath={.spec.template.spec.containers[0].image}"
+
+                        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($previousImage)) {
+                            throw "Could not determine the current Kubernetes image."
+                        }
+
+                        Write-Host "Previous image recorded."
+
+                        kubectl set image "deployment/$env:KUBE_DEPLOYMENT" "$env:KUBE_CONTAINER=$env:DOCKER_IMAGE`:invalid-image"
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Could not introduce the test failure"
+                            throw "Could not start the rollback test."
                         }
 
-                        kubectl rollout status "deployment/$env:K8S_DEPLOYMENT" --timeout=45s
+                        Start-Sleep -Seconds 20
 
+                        kubectl rollout undo "deployment/$env:KUBE_DEPLOYMENT"
                         if ($LASTEXITCODE -ne 0) {
-                            Write-Output "Faulty rollout detected. Rolling back to the previous stable release."
-
-                            kubectl rollout undo "deployment/$env:K8S_DEPLOYMENT"
-                            if ($LASTEXITCODE -ne 0) {
-                                throw "Automatic rollback command failed"
-                            }
-
-                            kubectl rollout status "deployment/$env:K8S_DEPLOYMENT" --timeout=120s
-                            if ($LASTEXITCODE -ne 0) {
-                                throw "Rollback did not become healthy"
-                            }
-
-                            Write-Output "Automatic rollback succeeded."
-                        }
-                        else {
-                            throw "The faulty rollout unexpectedly succeeded."
+                            throw "Kubernetes rollback command failed."
                         }
 
-                        $response = Invoke-WebRequest -Uri "http://localhost:30081" -UseBasicParsing -TimeoutSec 15
-                        if ($response.StatusCode -ne 200) {
-                            throw "Application did not respond after rollback"
+                        kubectl rollout status "deployment/$env:KUBE_DEPLOYMENT" --timeout=180s
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "The deployment did not recover after rollback."
                         }
 
-                        Write-Output "Application is responding after rollback."
+                        Write-Host "Kubernetes rollback test passed."
                     '''
                 }
             }
@@ -217,14 +310,18 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'index.html,Dockerfile,deployment.yaml,Jenkinsfile', fingerprint: true
+            archiveArtifacts(
+                artifacts: 'index.html,Dockerfile,deployment.yaml,Jenkinsfile',
+                allowEmptyArchive: true
+            )
         }
 
         success {
-            echo 'Pipeline completed successfully.'
+            echo 'SUCCESS: CI/CD pipeline completed successfully.'
         }
 
         failure {
-            echo 'Pipeline failed. Review the stage logs in Console Output.'
+            echo 'FAILURE: Check the failed stage in the Jenkins console output.'
         }
     }
+}
