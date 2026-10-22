@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TransitPulse | Public Transport Monitoring</title>
+    <style>
+        :root {
+            --navy: #14213d;
+            --blue: #2563eb;
+            --background: #f3f6fb;
+            --text: #1e293b;
+            --muted: #64748b;
+            --green: #15803d;
+            --orange: #c2410c;
+            --red: #b91c1c;
+            --border: #e2e8f0;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Arial, sans-serif;
+            color: var(--text);
+            background: var(--background);
+        }
+
+        header {
+            background: var(--navy);
+            color: white;
+            padding: 22px 6%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .brand { font-size: 25px; font-weight: 800; }
+        .brand span { color: #60a5fa; }
+        .header-note { color: #cbd5e1; font-size: 13px; }
+
+        main {
+            max-width: 1250px;
+            margin: 28px auto;
+            padding: 0 22px;
+        }
+
+        .welcome {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 22px;
+        }
+
+        h1 { font-size: 28px; margin: 0 0 8px; }
+        h2 { font-size: 19px; margin: 0 0 18px; }
+        .subtitle { color: var(--muted); margin: 0; }
+
+        .live {
+            background: #dcfce7;
+            color: #166534;
+            padding: 9px 14px;
+            border-radius: 30px;
+            font-weight: 700;
+            font-size: 13px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat, .panel {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 21px;
+            box-shadow: 0 3px 12px rgba(15, 23, 42, 0.035);
+        }
+
+        .stat-label { color: var(--muted); font-size: 13px; }
+        .stat-value { font-size: 30px; font-weight: 800; margin: 9px 0 5px; }
+        .stat-detail { color: var(--muted); font-size: 12px; }
+
+        .panel { margin-bottom: 22px; }
+        .panel-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+
+        .panel-heading h2 { margin: 0; }
+
+        .filter-area {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        input, select, button {
+            font: inherit;
+            border-radius: 8px;
+            padding: 10px 12px;
+        }
+
+        input, select {
+            border: 1px solid #cbd5e1;
+            background: white;
+            min-width: 170px;
+        }
+
+        button {
+            border: 0;
+            background: var(--blue);
+            color: white;
+            cursor: pointer;
+            font-weight: 700;
+        }
+
+        button:hover { background: #1d4ed8; }
+
+        .table-wrap { overflow-x: auto; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            min-width: 720px;
+        }
+
+        th {
+            background: #f8fafc;
+            color: var(--muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: .4px;
+        }
+
+        th, td {
+            padding: 15px 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td { font-size: 14px; }
+        tbody tr:last-child td { border-bottom: none; }
+
+        .route-number { color: var(--blue); font-weight: 800; }
+        .muted { color: var(--muted); font-size: 12px; display: block; margin-top: 4px; }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 9px;
+            border-radius: 30px;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .low, .normal { background: #dcfce7; color: var(--green); }
+        .moderate, .delayed { background: #ffedd5; color: var(--orange); }
+        .high, .disrupted { background: #fee2e2; color: var(--red); }
+
+        .alerts {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 15px;
+        }
+
+        .alert {
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--orange);
+            border-radius: 10px;
+            padding: 16px;
+            background: white;
+        }
+
+        .alert.critical { border-left-color: var(--red); }
+        .alert-title { font-weight: 800; margin-bottom: 8px; }
+        .alert p { color: var(--muted); font-size: 14px; line-height: 1.55; margin: 0; }
+        .alert-time { display: block; color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+        .advisory {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            padding: 17px;
+            border-radius: 10px;
+            line-height: 1.6;
+            color: #1e40af;
+        }
+
+        .empty { text-align: center; color: var(--muted); padding: 30px; }
+
+        footer {
+            padding: 22px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        @media (max-width: 850px) {
+            .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        @media (max-width: 560px) {
+            .stats, .alerts { grid-template-columns: 1fr; }
+            h1 { font-size: 23px; }
+            main { padding: 0 13px; }
+            header { padding: 20px; }
+            .stat, .panel { padding: 16px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">Transit<span>Pulse</span></div>
+        <div class="header-note">METROPOLITAN TRANSPORT AUTHORITY · DEMO</div>
+    </header>
+
+    <main>
+        <section class="welcome">
+            <div>
+                <h1>Public Transport Monitoring</h1>
+                <p class="subtitle">Bus routes, arrival estimates and service updates in one place.</p>
+            </div>
+            <div class="live">● SIMULATED LIVE DATA</div>
+        </section>
+
+        <section class="stats" aria-label="Transport summary">
+            <div class="stat">
+                <div class="stat-label">Monitored Routes</div>
+                <div class="stat-value" id="routeCount">6</div>
+                <div class="stat-detail">Across the city network</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Services Running</div>
+                <div class="stat-value" id="runningCount">4</div>
+                <div class="stat-detail">Operating normally</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Service Alerts</div>
+                <div class="stat-value" id="alertCount">3</div>
+                <div class="stat-detail">Delays, diversions and closures</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">High Crowd Level</div>
+                <div class="stat-value" id="crowdCount">2</div>
+                <div class="stat-detail">Consider an alternative service</div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-heading">
+                <h2>Bus Route Monitor</h2>
+                <div class="filter-area">
+                    <input type="search" id="routeSearch" placeholder="Filter by route number"
+                           aria-label="Filter by route number">
+                    <select id="statusFilter" aria-label="Filter by service status">
+                        <option value="All">All service statuses</option>
+                        <option value="On Time">On Time</option>
+                        <option value="Delayed">Delayed</option>
+                        <option value="Diverted">Diverted</option>
+                    </select>
+                    <button type="button" id="resetButton">Reset</button>
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Route</th>
+                            <th>Journey</th>
+                            <th>Next Arrival</th>
+                            <th>Crowd Level</th>
+                            <th>Service Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="routeTable"></tbody>
+                </table>
+                <div id="emptyMessage" class="empty" hidden>No routes match your filters.</div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-heading">
+                <h2>Service Disruptions</h2>
+                <span class="badge delayed">3 active sample alerts</span>
+            </div>
+
+            <div class="alerts">
+                <article class="alert">
+                    <div class="alert-title">⚠ Route 12 — Traffic Delay</div>
+                    <p>Expected delays of approximately 10–15 minutes near Central Market due to heavy traffic.</p>
+                    <span class="alert-time">Updated: 08:15 AM · Simulated update</span>
+                </article>
+                <article class="alert critical">
+                    <div class="alert-title">↗ Route 24 — Temporary Diversion</div>
+                    <p>Buses are diverted through Lake Road because of road maintenance near City Hospital.</p>
+                    <span class="alert-time">Updated: 08:20 AM · Simulated update</span>
+                </article>
+                <article class="alert">
+                    <div class="alert-title">🚏 Route 36 — Stop Closure</div>
+                    <p>Town Hall stop is temporarily closed. Passengers should board at Library Junction.</p>
+                    <span class="alert-time">Updated: 08:25 AM · Simulated update</span>
+                </article>
+                <article class="alert">
+                    <div class="alert-title">✓ Network Service Information</div>
+                    <p>Other monitored services are operating according to the sample timetable. Arrival times are estimates.</p>
+                    <span class="alert-time">Status: Informational</span>
+                </article>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Passenger Advisory</h2>
+            <div class="advisory">
+                <strong>Travel notice:</strong> Please check route updates before starting your journey.
+                Allow extra time on affected routes, follow temporary stop signage, and keep clear of bus doors.
+                Arrival estimates and crowd levels on this demonstration dashboard use simulated data and are not
+                connected to a real transport feed.
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        TransitPulse · Public Transport Monitoring Dashboard · Educational Demonstration · Simulated Data Only
+    </footer>
+
+    <script>
+        const routes = [
+            { number: "12", from: "Central Station", to: "North Park", arrival: 4, crowd: "High", status: "Delayed" },
+            { number: "18", from: "City Centre", to: "Riverside", arrival: 7, crowd: "Low", status: "On Time" },
+            { number: "24", from: "West Terminal", to: "City Hospital", arrival: 12, crowd: "Moderate", status: "Diverted" },
+            { number: "31", from: "University", to: "Central Station", arrival: 5, crowd: "High", status: "On Time" },
+            { number: "36", from: "East Market", to: "Town Hall", arrival: 9, crowd: "Moderate", status: "Delayed" },
+            { number: "42", from: "Airport Road", to: "South Terminal", arrival: 3, crowd: "Low", status: "On Time" }
+        ];
+
+        function badgeClass(value) {
+            if (value === "Low" || value === "On Time") return value === "Low" ? "low" : "normal";
+            if (value === "Moderate" || value === "Delayed") return value === "Moderate" ? "moderate" : "delayed";
+            return value === "High" ? "high" : "disrupted";
+        }
+
+        function renderRoutes() {
+            const search = document.getElementById("routeSearch").value.trim().toLowerCase();
+            const status = document.getElementById("statusFilter").value;
+            const filtered = routes.filter(route =>
+                route.number.toLowerCase().includes(search) &&
+                (status === "All" || route.status === status)
+            );
+
+            const tbody = document.getElementById("routeTable");
+            tbody.replaceChildren();
+
+            filtered.forEach(route => {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td><span class="route-number">BUS ${route.number}</span></td>
+                    <td>${route.from}<span class="muted">to ${route.to}</span></td>
+                    <td><strong>${route.arrival} min</strong><span class="muted">Estimated arrival</span></td>
+                    <td><span class="badge ${badgeClass(route.crowd)}">${route.crowd}</span></td>
+                    <td><span class="badge ${badgeClass(route.status)}">${route.status}</span></td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            document.getElementById("emptyMessage").hidden = filtered.length !== 0;
+        }
+
+        document.getElementById("routeSearch").addEventListener("input", renderRoutes);
+        document.getElementById("statusFilter").addEventListener("change", renderRoutes);
+
+        document.getElementById("resetButton").addEventListener("click", () => {
+            document.getElementById("routeSearch").value = "";
+            document.getElementById("statusFilter").value = "All";
+            renderRoutes();
+        });
+
+        document.getElementById("routeCount").textContent = routes.length;
+        document.getElementById("runningCount").textContent =
+            routes.filter(route => route.status === "On Time").length;
+        document.getElementById("crowdCount").textContent =
+            routes.filter(route => route.crowd === "High").length;
+
+        renderRoutes();
+    </script>
+</body>
+</html>
